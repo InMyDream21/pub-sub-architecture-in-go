@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/bootdotdev/learn-pub-sub-starter/internal/routing"
 	"github.com/rabbitmq/amqp091-go"
 )
 
@@ -13,6 +14,14 @@ type SimpleQueueType string
 const (
 	DurableQueueType   SimpleQueueType = "durable"
 	TransientQueueType SimpleQueueType = "transient"
+)
+
+type AckType string
+
+const (
+	AckTypeAck         AckType = "ack"
+	AckTypeNackRequeue AckType = "nack"
+	AckTypeNackDiscard AckType = "nack_discard"
 )
 
 func PublishJSON[T any](ch *amqp091.Channel, exchange, key string, val T) error {
@@ -38,7 +47,7 @@ func DeclareAndBind(
 		return nil, amqp091.Queue{}, err
 	}
 	durable := queueType == DurableQueueType
-	queue, err := ch.QueueDeclare(queueName, durable, !durable, !durable, false, nil)
+	queue, err := ch.QueueDeclare(queueName, durable, !durable, !durable, false, amqp091.Table{"x-dead-letter-exchange": routing.ExchangeDeadLetter})
 	if err != nil {
 		return nil, amqp091.Queue{}, err
 	}
@@ -54,7 +63,7 @@ func SubscribeJSON[T any](
 	queueName,
 	key string,
 	queueType SimpleQueueType,
-	handler func(T),
+	handler func(T) AckType,
 ) error {
 	ch, _, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
@@ -71,7 +80,21 @@ func SubscribeJSON[T any](
 				fmt.Println("could not unmarshal message: ", err)
 				continue
 			}
-			handler(val)
+			ackType := handler(val)
+			if ackType == AckTypeNackDiscard {
+				fmt.Println("nack discard")
+				if err := msg.Nack(false, false); err != nil {
+					fmt.Println("could not ack message: ", err)
+				}
+				continue
+			} else if ackType == AckTypeNackRequeue {
+				fmt.Println("nack requeue")
+				if err := msg.Nack(false, true); err != nil {
+					fmt.Println("could not ack message: ", err)
+				}
+				continue
+			}
+			fmt.Println("ack")
 			if err := msg.Ack(false); err != nil {
 				fmt.Println("could not ack message: ", err)
 			}
