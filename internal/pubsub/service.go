@@ -1,7 +1,9 @@
 package pubsub
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 
@@ -57,13 +59,14 @@ func DeclareAndBind(
 	return ch, queue, nil
 }
 
-func SubscribeJSON[T any](
+func subscribe[T any](
 	conn *amqp091.Connection,
 	exchange,
 	queueName,
 	key string,
 	queueType SimpleQueueType,
 	handler func(T) AckType,
+	unmarshaller func([]byte) (T, error),
 ) error {
 	ch, _, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
@@ -76,7 +79,7 @@ func SubscribeJSON[T any](
 	go func() {
 		for msg := range msgs {
 			var val T
-			if err := json.Unmarshal(msg.Body, &val); err != nil {
+			if val, err = unmarshaller(msg.Body); err != nil {
 				fmt.Println("could not unmarshal message: ", err)
 				continue
 			}
@@ -101,4 +104,51 @@ func SubscribeJSON[T any](
 		}
 	}()
 	return nil
+}
+
+func SubscribeJSON[T any](
+	conn *amqp091.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T) AckType,
+) error {
+	return subscribe[T](conn, exchange, queueName, key, queueType, handler, func(b []byte) (T, error) {
+		var val T
+		if err := json.Unmarshal(b, &val); err != nil {
+			return val, err
+		}
+		return val, nil
+	})
+}
+
+func SubscribeGob[T any](
+	conn *amqp091.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T) AckType,
+) error {
+	return subscribe[T](conn, exchange, queueName, key, queueType, handler, func(b []byte) (T, error) {
+		var val T
+		if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&val); err != nil {
+			return val, err
+		}
+		return val, nil
+	})
+}
+
+func PublishGob[T any](
+	ch *amqp091.Channel, exchange, key string, val T,
+) error {
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(val); err != nil {
+		return err
+	}
+	return ch.Publish(exchange, key, false, false, amqp091.Publishing{
+		ContentType: "application/gob",
+		Body:        buf.Bytes(),
+	})
 }
