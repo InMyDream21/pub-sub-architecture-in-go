@@ -25,12 +25,11 @@ func main() {
 	}
 	defer channel.Close()
 
-	ch, _, err := pubsub.DeclareAndBind(conn, routing.ExchangePerilDirect, "game_logs", "game_logs.*", pubsub.DurableQueueType)
+	err = pubsub.SubscribeGob(conn, routing.ExchangePerilTopic, "game_logs", "game_logs.*", pubsub.DurableQueueType, handlerLog)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	defer ch.Close()
 
 	err = pubsub.PublishJSON(channel, routing.ExchangePerilDirect, routing.PauseKey, routing.PlayingState{IsPaused: true})
 	if err != nil {
@@ -69,4 +68,13 @@ func main() {
 		}
 		fmt.Println("Unknown command:", words[0])
 	}
+}
+
+func handlerLog(log routing.GameLog) pubsub.AckType {
+	defer fmt.Println("> ")
+	err := gamelogic.WriteLog(log)
+	if err != nil {
+		return pubsub.AckTypeNackRequeue
+	}
+	return pubsub.AckTypeAck
 }

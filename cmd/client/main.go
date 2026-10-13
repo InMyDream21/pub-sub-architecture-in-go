@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/gamelogic"
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/pubsub"
@@ -43,7 +44,7 @@ func main() {
 		return
 	}
 	err = pubsub.SubscribeJSON(conn, routing.ExchangePerilTopic,
-		routing.WarRecognitionsPrefix, routing.WarRecognitionsPrefix+".*", pubsub.DurableQueueType, handlerWar(state))
+		routing.WarRecognitionsPrefix, routing.WarRecognitionsPrefix+".*", pubsub.DurableQueueType, handlerWar(state, channel))
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -122,23 +123,53 @@ func handlerMove(gs *gamelogic.GameState, ch *amqp091.Channel) func(gamelogic.Ar
 	}
 }
 
-func handlerWar(gs *gamelogic.GameState) func(gamelogic.RecognitionOfWar) pubsub.AckType {
+func handlerWar(gs *gamelogic.GameState, ch *amqp091.Channel) func(gamelogic.RecognitionOfWar) pubsub.AckType {
 	return func(w gamelogic.RecognitionOfWar) pubsub.AckType {
 		defer fmt.Print("> ")
-		outcome, _, _ := gs.HandleWar(w)
+		outcome, winner, loser := gs.HandleWar(w)
+		var message string
 		switch outcome {
 		case gamelogic.WarOutcomeNotInvolved:
 			return pubsub.AckTypeNackRequeue
 		case gamelogic.WarOutcomeNoUnits:
 			return pubsub.AckTypeNackDiscard
 		case gamelogic.WarOutcomeOpponentWon:
+			message = fmt.Sprintf("%s won a war against %s\n", winner, loser)
+			if err := publishWarResult(ch, message, routing.GameLog{
+				CurrentTime: time.Now(),
+				Message:     message,
+				Username:    w.Attacker.Username,
+			}); err != nil {
+				return pubsub.AckTypeNackRequeue
+			}
 			return pubsub.AckTypeAck
 		case gamelogic.WarOutcomeYouWon:
+			message = fmt.Sprintf("%s won a war against %s\n", winner, loser)
+			if err := publishWarResult(ch, message, routing.GameLog{
+				CurrentTime: time.Now(),
+				Message:     message,
+				Username:    w.Defender.Username,
+			}); err != nil {
+				return pubsub.AckTypeNackRequeue
+			}
 			return pubsub.AckTypeAck
 		case gamelogic.WarOutcomeDraw:
+			message = fmt.Sprintf("A war between %s and %s resulted in a draw\n", winner, loser)
+			if err := publishWarResult(ch, message, routing.GameLog{
+				CurrentTime: time.Now(),
+				Message:     message,
+				Username:    w.Attacker.Username,
+			}); err != nil {
+				return pubsub.AckTypeNackRequeue
+			}
 			return pubsub.AckTypeAck
 		}
 		fmt.Println("error")
 		return pubsub.AckTypeNackDiscard
 	}
+}
+
+func publishWarResult(ch *amqp091.Channel, username string, data routing.GameLog) error {
+	err := pubsub.PublishGob(ch, routing.ExchangePerilTopic, routing.GameLogSlug+"."+username, data)
+	return err
 }
